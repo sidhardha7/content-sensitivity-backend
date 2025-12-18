@@ -7,6 +7,7 @@ import connectDB from './src/config/db';
 import './src/models';
 import authRoutes from './src/routes/auth.routes';
 import adminRoutes from './src/routes/admin.routes';
+import videoRoutes from './src/routes/video.routes';
 
 const app = express();
 
@@ -22,6 +23,7 @@ app.use(morgan('dev'));
 // API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/videos', videoRoutes);
 
 // Basic root route
 app.get('/', (_req: Request, res: Response) => {
