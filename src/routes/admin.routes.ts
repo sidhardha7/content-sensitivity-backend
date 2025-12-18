@@ -36,10 +36,13 @@ router.post(
 
     const tenantId = req.user!.tenantId;
 
+    // Normalize email to lowercase and trim whitespace
+    const normalizedEmail = email.toLowerCase().trim();
+
     // For now, new users get a temporary password the admin can share/reset elsewhere.
     const tempPassword = "ChangeMe123!";
 
-    const existing = await User.findOne({ tenantId, email });
+    const existing = await User.findOne({ tenantId, email: normalizedEmail });
     if (existing) {
       return res
         .status(400)
@@ -52,9 +55,10 @@ router.post(
     const user = await User.create({
       tenantId,
       name,
-      email,
+      email: normalizedEmail,
       role,
       passwordHash,
+      isActive: true,
     });
 
     return res.status(201).json({
@@ -85,14 +89,15 @@ router.patch(
     }
 
     // Check if email is being changed and if it's already taken
-    if (email && email !== user.email) {
-      const existing = await User.findOne({ tenantId, email });
+    if (email && email.toLowerCase().trim() !== user.email) {
+      const normalizedEmail = email.toLowerCase().trim();
+      const existing = await User.findOne({ tenantId, email: normalizedEmail });
       if (existing) {
         return res
           .status(400)
           .json({ message: "User with this email already exists in tenant" });
       }
-      user.email = email;
+      user.email = normalizedEmail;
     }
 
     if (name) {

@@ -104,13 +104,13 @@ export const registerFirstAdmin = async (
 };
 
 export const login = async (input: LoginInput): Promise<AuthResult> => {
-  // Find user by email globally (across all tenants)
-  const user = await User.findOne({ email: input.email.toLowerCase() });
+  const normalizedEmail = input.email.toLowerCase().trim();
+
+  const user = await User.findOne({ email: normalizedEmail });
   if (!user) {
     throw new Error("Invalid credentials");
   }
 
-  // Check if user is inactive
   if (!user.isActive) {
     throw new Error("Inactive user");
   }
