@@ -1,4 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+import { jwtSecret } from '../config/env';
 import multer from 'multer';
 import { Server as SocketIOServer } from 'socket.io';
 import { AuthenticatedRequest, authMiddleware, requireRole } from '../middleware/auth';
@@ -218,7 +220,25 @@ router.get('/:id/status', authMiddleware, async (req: AuthenticatedRequest, res:
 });
 
 // GET /api/videos/:id/stream - Stream video with HTTP range support
-router.get('/:id/stream', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+// Accepts token from Authorization header or query param (for video element)
+router.get('/:id/stream', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  // Try Authorization header first, then query param
+  const token = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.substring('Bearer '.length)
+    : (req.query.token as string);
+
+  if (!token) {
+    return res.status(401).json({ message: 'Missing or invalid token' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, jwtSecret) as any;
+    req.user = decoded;
+    return next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+}, async (req: AuthenticatedRequest, res: Response) => {
   try {
     if (!req.user) {
       return res.status(401).json({ message: 'Unauthenticated' });
@@ -258,6 +278,7 @@ router.get('/:id/stream', authMiddleware, async (req: AuthenticatedRequest, res:
       if (start >= fileSize || end >= fileSize || start > end) {
         res.status(416).set({
           'Content-Range': `bytes */${fileSize}`,
+          'Access-Control-Allow-Origin': '*',
         });
         return res.end();
       }
@@ -267,8 +288,12 @@ router.get('/:id/stream', authMiddleware, async (req: AuthenticatedRequest, res:
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunkSize,
-        'Content-Type': video.mimeType,
-        'Cache-Control': 'no-cache',
+        'Content-Type': video.mimeType || 'video/mp4',
+        'Cache-Control': 'public, max-age=3600',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': 'Range',
+        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
       });
 
       // Create read stream for the requested range
@@ -278,9 +303,13 @@ router.get('/:id/stream', authMiddleware, async (req: AuthenticatedRequest, res:
       // No range header - stream entire file
       res.status(200).set({
         'Content-Length': fileSize,
-        'Content-Type': video.mimeType,
+        'Content-Type': video.mimeType || 'video/mp4',
         'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'public, max-age=3600',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': 'Range',
+        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
       });
 
       const stream = fs.createReadStream(filePath);

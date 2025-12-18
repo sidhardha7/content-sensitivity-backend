@@ -151,4 +151,76 @@ router.delete(
   }
 );
 
+// GET /api/admin/users/:id/videos - get video permissions for a user
+router.get(
+  "/users/:id/videos",
+  authMiddleware,
+  requireRole("admin"),
+  async (req: AuthenticatedRequest, res: Response) => {
+    const tenantId = req.user!.tenantId;
+    const { id } = req.params;
+
+    const user = await User.findOne({ _id: id, tenantId });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const { Video } = await import("../models/Video");
+    const mongoose = await import("mongoose");
+
+    // Get videos owned by this user
+    const ownedVideos = await Video.find({
+      tenantId,
+      ownerId: id,
+    })
+      .select("_id title description status safetyStatus createdAt ownerId")
+      .populate("ownerId", "name email")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Get videos assigned to this user
+    const assignedVideos = await Video.find({
+      tenantId,
+      assignedTo: new mongoose.default.Types.ObjectId(id),
+    })
+      .select(
+        "_id title description status safetyStatus createdAt ownerId assignedTo"
+      )
+      .populate("ownerId", "name email")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({
+      ownedVideos: ownedVideos.map((v: any) => ({
+        _id: v._id,
+        title: v.title,
+        description: v.description,
+        status: v.status,
+        safetyStatus: v.safetyStatus,
+        createdAt: v.createdAt,
+        owner: {
+          _id: v.ownerId._id || v.ownerId,
+          name: v.ownerId.name || "",
+          email: v.ownerId.email || "",
+        },
+        accessType: "owner",
+      })),
+      assignedVideos: assignedVideos.map((v: any) => ({
+        _id: v._id,
+        title: v.title,
+        description: v.description,
+        status: v.status,
+        safetyStatus: v.safetyStatus,
+        createdAt: v.createdAt,
+        owner: {
+          _id: v.ownerId._id || v.ownerId,
+          name: v.ownerId.name || "",
+          email: v.ownerId.email || "",
+        },
+        accessType: "assigned",
+      })),
+    });
+  }
+);
+
 export default router;

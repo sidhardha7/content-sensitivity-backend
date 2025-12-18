@@ -23,7 +23,10 @@ setSocketIO(io);
 
 // Core middlewares
 app.use(cors({ origin: clientOrigin, credentials: true }));
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(express.json());
 app.use(morgan('dev'));
 
