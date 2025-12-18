@@ -1,23 +1,28 @@
-import { Router, Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { jwtSecret } from '../config/env';
-import multer from 'multer';
-import { Server as SocketIOServer } from 'socket.io';
-import { AuthenticatedRequest, authMiddleware, requireRole } from '../middleware/auth';
+import { Router, Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
+import { jwtSecret } from "../config/env";
+import multer from "multer";
+import { Server as SocketIOServer } from "socket.io";
+import {
+  AuthenticatedRequest,
+  authMiddleware,
+  requireRole,
+} from "../middleware/auth";
 import {
   createVideo,
   listVideos,
-  listMyVideos,
   getVideoById,
-  updateVideoStatus,
   deleteVideo,
-  assignVideoToUsers,
   addUsersToVideo,
   removeUsersFromVideo,
-} from '../services/videoService';
-import { processVideo, getProcessingStatus } from '../services/processingService';
-import { getFilePath, getFileStats, fileExists } from '../services/storageService';
-import fs from 'fs';
+} from "../services/videoService";
+import { processVideo } from "../services/processingService";
+import {
+  getFilePath,
+  getFileStats,
+  fileExists,
+} from "../services/storageService";
+import fs from "fs";
 
 // Store io instance (will be set from index.ts)
 let ioInstance: SocketIOServer | undefined;
@@ -36,34 +41,34 @@ const upload = multer({
   },
   fileFilter: (_req, file, cb) => {
     // Accept video files
-    if (file.mimetype.startsWith('video/')) {
+    if (file.mimetype.startsWith("video/")) {
       cb(null, true);
     } else {
-      cb(new Error('Only video files are allowed'));
+      cb(new Error("Only video files are allowed"));
     }
   },
 });
 
 // POST /api/videos/upload - Upload a new video (editor/admin only)
 router.post(
-  '/upload',
+  "/upload",
   authMiddleware,
-  requireRole('editor', 'admin'),
-  upload.single('video'),
+  requireRole("editor", "admin"),
+  upload.single("video"),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!req.file) {
-        return res.status(400).json({ message: 'No video file provided' });
+        return res.status(400).json({ message: "No video file provided" });
       }
 
       if (!req.user) {
-        return res.status(401).json({ message: 'Unauthenticated' });
+        return res.status(401).json({ message: "Unauthenticated" });
       }
 
       const { title, description } = req.body;
 
       if (!title) {
-        return res.status(400).json({ message: 'Title is required' });
+        return res.status(400).json({ message: "Title is required" });
       }
 
       const video = await createVideo({
@@ -75,9 +80,11 @@ router.post(
       });
 
       // Trigger processing asynchronously (don't wait for it)
-      processVideo(video._id.toString(), req.user.tenantId, ioInstance).catch((error) => {
-        console.error('[video] Failed to start processing:', error);
-      });
+      processVideo(video._id.toString(), req.user.tenantId, ioInstance).catch(
+        (error) => {
+          console.error("[video] Failed to start processing:", error);
+        }
+      );
 
       return res.status(201).json({
         video: {
@@ -91,305 +98,201 @@ router.post(
         },
       });
     } catch (error: any) {
-      return res.status(400).json({ message: error?.message || 'Upload failed' });
+      return res
+        .status(400)
+        .json({ message: error?.message || "Upload failed" });
     }
   }
 );
-
-// GET /api/videos/my-videos - List videos owned by current user
-// Available to all roles: shows videos where ownerId = current user's ID
-router.get('/my-videos', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ message: 'Unauthenticated' });
-    }
-
-    const { status, safetyStatus, fromDate, toDate, search } = req.query;
-
-    const filters: any = {};
-    if (status) filters.status = status;
-    if (safetyStatus) filters.safetyStatus = safetyStatus;
-    if (fromDate) filters.fromDate = new Date(fromDate as string);
-    if (toDate) filters.toDate = new Date(toDate as string);
-    if (search) filters.search = search;
-
-    const videos = await listMyVideos(req.user.tenantId, req.user.userId, filters);
-
-    return res.json({
-      videos: videos.map((v) => ({
-        _id: v._id,
-        title: v.title,
-        description: v.description,
-        originalFilename: v.originalFilename,
-        size: v.size,
-        duration: v.duration,
-        status: v.status,
-        safetyStatus: v.safetyStatus,
-        owner: v.ownerId,
-        assignedTo: v.assignedTo,
-        createdAt: v.createdAt,
-        updatedAt: v.updatedAt,
-      })),
-    });
-  } catch (error: any) {
-    return res.status(500).json({ message: error?.message || 'Failed to list my videos' });
-  }
-});
 
 // GET /api/videos - List videos for tenant (role-based access)
 // - Viewers: Only see videos assigned to them (assignedTo contains their userId)
 // - Editors: See videos they uploaded (ownerId = userId) OR videos assigned to them (assignedTo contains userId)
 // - Admins: See ALL videos in tenant
-router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ message: 'Unauthenticated' });
-    }
-
-    const { status, safetyStatus, fromDate, toDate, search } = req.query;
-
-    const filters: any = {};
-    if (status) filters.status = status;
-    if (safetyStatus) filters.safetyStatus = safetyStatus;
-    if (fromDate) filters.fromDate = new Date(fromDate as string);
-    if (toDate) filters.toDate = new Date(toDate as string);
-    if (search) filters.search = search;
-
-    const videos = await listVideos(
-      req.user.tenantId,
-      filters,
-      req.user.role,
-      req.user.userId
-    );
-
-    return res.json({
-      videos: videos.map((v) => ({
-        _id: v._id,
-        title: v.title,
-        description: v.description,
-        originalFilename: v.originalFilename,
-        size: v.size,
-        duration: v.duration,
-        status: v.status,
-        safetyStatus: v.safetyStatus,
-        owner: v.ownerId,
-        assignedTo: v.assignedTo,
-        createdAt: v.createdAt,
-        updatedAt: v.updatedAt,
-      })),
-    });
-  } catch (error: any) {
-    return res.status(500).json({ message: error?.message || 'Failed to list videos' });
-  }
-});
-
-// GET /api/videos/:id/status - Get processing status (for polling fallback)
-router.get('/:id/status', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ message: 'Unauthenticated' });
-    }
-
-    const video = await getVideoById(
-      req.params.id,
-      req.user.tenantId,
-      req.user.role,
-      req.user.userId
-    );
-
-    if (!video) {
-      return res.status(404).json({ message: 'Video not found or access denied' });
-    }
-
-    const processingStatus = getProcessingStatus(req.params.id);
-
-    return res.json({
-      videoId: req.params.id,
-      status: video.status,
-      safetyStatus: video.safetyStatus,
-      processing: processingStatus
-        ? {
-            progress: processingStatus.progress,
-            status: processingStatus.status,
-          }
-        : null,
-    });
-  } catch (error: any) {
-    return res.status(500).json({ message: error?.message || 'Failed to get status' });
-  }
-});
-
-// GET /api/videos/:id/stream - Stream video with HTTP range support
-// Accepts token from Authorization header or query param (for video element)
-router.get('/:id/stream', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-  // Try Authorization header first, then query param
-  const token = req.headers.authorization?.startsWith('Bearer ')
-    ? req.headers.authorization.substring('Bearer '.length)
-    : (req.query.token as string);
-
-  if (!token) {
-    return res.status(401).json({ message: 'Missing or invalid token' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, jwtSecret) as any;
-    req.user = decoded;
-    return next();
-  } catch (error) {
-    return res.status(401).json({ message: 'Invalid or expired token' });
-  }
-}, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ message: 'Unauthenticated' });
-    }
-
-    const video = await getVideoById(
-      req.params.id,
-      req.user.tenantId,
-      req.user.role,
-      req.user.userId
-    );
-
-    if (!video) {
-      return res.status(404).json({ message: 'Video not found or access denied' });
-    }
-
-    // Check if file exists
-    if (!fileExists(video.storagePath)) {
-      return res.status(404).json({ message: 'Video file not found' });
-    }
-
-    const filePath = getFilePath(video.storagePath);
-    const stats = await getFileStats(video.storagePath);
-    const fileSize = stats.size;
-
-    // Parse Range header
-    const range = req.headers.range;
-
-    if (range) {
-      // Parse range header (e.g., "bytes=0-1023")
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunkSize = end - start + 1;
-
-      // Validate range
-      if (start >= fileSize || end >= fileSize || start > end) {
-        res.status(416).set({
-          'Content-Range': `bytes */${fileSize}`,
-          'Access-Control-Allow-Origin': '*',
-        });
-        return res.end();
-      }
-
-      // Set headers for partial content
-      res.status(206).set({
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunkSize,
-        'Content-Type': video.mimeType || 'video/mp4',
-        'Cache-Control': 'public, max-age=3600',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': 'Range',
-        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
-      });
-
-      // Create read stream for the requested range
-      const stream = fs.createReadStream(filePath, { start, end });
-      stream.pipe(res);
-    } else {
-      // No range header - stream entire file
-      res.status(200).set({
-        'Content-Length': fileSize,
-        'Content-Type': video.mimeType || 'video/mp4',
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': 'public, max-age=3600',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': 'Range',
-        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
-      });
-
-      const stream = fs.createReadStream(filePath);
-      stream.pipe(res);
-    }
-  } catch (error: any) {
-    console.error('[stream] Error streaming video:', error);
-    if (!res.headersSent) {
-      return res.status(500).json({ message: error?.message || 'Failed to stream video' });
-    }
-  }
-});
-
-// GET /api/videos/:id - Get single video details
-router.get('/:id', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ message: 'Unauthenticated' });
-    }
-
-    const video = await getVideoById(
-      req.params.id,
-      req.user.tenantId,
-      req.user.role,
-      req.user.userId
-    );
-
-    if (!video) {
-      return res.status(404).json({ message: 'Video not found or access denied' });
-    }
-
-    return res.json({
-      video: {
-        _id: video._id,
-        title: video.title,
-        description: video.description,
-        originalFilename: video.originalFilename,
-        size: video.size,
-        duration: video.duration,
-        status: video.status,
-        safetyStatus: video.safetyStatus,
-        owner: video.ownerId,
-        assignedTo: video.assignedTo,
-        createdAt: video.createdAt,
-        updatedAt: video.updatedAt,
-      },
-    });
-  } catch (error: any) {
-    return res.status(500).json({ message: error?.message || 'Failed to get video' });
-  }
-});
-
-// PATCH /api/videos/:id - Update video (editor/admin only)
-// Editors can edit videos they own OR videos assigned to them
-// Admins can edit ANY video in their tenant
-router.patch(
-  '/:id',
+router.get(
+  "/",
   authMiddleware,
-  requireRole('editor', 'admin'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!req.user) {
-        return res.status(401).json({ message: 'Unauthenticated' });
+        return res.status(401).json({ message: "Unauthenticated" });
       }
 
-      const { title, description } = req.body;
-      const updates: any = {};
-      if (title) updates.title = title;
-      if (description !== undefined) updates.description = description;
+      const { status, safetyStatus, fromDate, toDate, search } = req.query;
 
-      const video = await updateVideoStatus(
+      const filters: any = {};
+      if (status) filters.status = status;
+      if (safetyStatus) filters.safetyStatus = safetyStatus;
+      if (fromDate) filters.fromDate = new Date(fromDate as string);
+      if (toDate) filters.toDate = new Date(toDate as string);
+      if (search) filters.search = search;
+
+      const videos = await listVideos(
+        req.user.tenantId,
+        filters,
+        req.user.role,
+        req.user.userId
+      );
+
+      return res.json({
+        videos: videos.map((v) => ({
+          _id: v._id,
+          title: v.title,
+          description: v.description,
+          originalFilename: v.originalFilename,
+          size: v.size,
+          duration: v.duration,
+          status: v.status,
+          safetyStatus: v.safetyStatus,
+          owner: v.ownerId,
+          assignedTo: v.assignedTo,
+          createdAt: v.createdAt,
+          updatedAt: v.updatedAt,
+        })),
+      });
+    } catch (error: any) {
+      return res
+        .status(500)
+        .json({ message: error?.message || "Failed to list videos" });
+    }
+  }
+);
+
+// GET /api/videos/:id/stream - Stream video with HTTP range support
+// Accepts token from Authorization header or query param (for video element)
+router.get(
+  "/:id/stream",
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // Try Authorization header first, then query param
+    const token = req.headers.authorization?.startsWith("Bearer ")
+      ? req.headers.authorization.substring("Bearer ".length)
+      : (req.query.token as string);
+
+    if (!token) {
+      return res.status(401).json({ message: "Missing or invalid token" });
+    }
+
+    try {
+      const decoded = jwt.verify(token, jwtSecret) as any;
+      req.user = decoded;
+      return next();
+    } catch (error) {
+      return res.status(401).json({ message: "Invalid or expired token" });
+    }
+  },
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: "Unauthenticated" });
+      }
+
+      const video = await getVideoById(
         req.params.id,
         req.user.tenantId,
-        updates,
         req.user.role,
         req.user.userId
       );
 
       if (!video) {
-        return res.status(404).json({ message: 'Video not found or access denied' });
+        return res
+          .status(404)
+          .json({ message: "Video not found or access denied" });
+      }
+
+      // Check if file exists
+      if (!fileExists(video.storagePath)) {
+        return res.status(404).json({ message: "Video file not found" });
+      }
+
+      const filePath = getFilePath(video.storagePath);
+      const stats = await getFileStats(video.storagePath);
+      const fileSize = stats.size;
+
+      // Parse Range header
+      const range = req.headers.range;
+
+      if (range) {
+        // Parse range header (e.g., "bytes=0-1023")
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+        const chunkSize = end - start + 1;
+
+        // Validate range
+        if (start >= fileSize || end >= fileSize || start > end) {
+          res.status(416).set({
+            "Content-Range": `bytes */${fileSize}`,
+            "Access-Control-Allow-Origin": "*",
+          });
+          return res.end();
+        }
+
+        // Set headers for partial content
+        res.status(206).set({
+          "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": chunkSize,
+          "Content-Type": video.mimeType || "video/mp4",
+          "Cache-Control": "public, max-age=3600",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+          "Access-Control-Allow-Headers": "Range",
+          "Access-Control-Expose-Headers":
+            "Content-Range, Content-Length, Accept-Ranges",
+        });
+
+        // Create read stream for the requested range
+        const stream = fs.createReadStream(filePath, { start, end });
+        stream.pipe(res);
+      } else {
+        // No range header - stream entire file
+        res.status(200).set({
+          "Content-Length": fileSize,
+          "Content-Type": video.mimeType || "video/mp4",
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "public, max-age=3600",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+          "Access-Control-Allow-Headers": "Range",
+          "Access-Control-Expose-Headers":
+            "Content-Range, Content-Length, Accept-Ranges",
+        });
+
+        const stream = fs.createReadStream(filePath);
+        stream.pipe(res);
+      }
+    } catch (error: any) {
+      console.error("[stream] Error streaming video:", error);
+      if (!res.headersSent) {
+        return res
+          .status(500)
+          .json({ message: error?.message || "Failed to stream video" });
+      }
+    }
+  }
+);
+
+// GET /api/videos/:id - Get single video details
+router.get(
+  "/:id",
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: "Unauthenticated" });
+      }
+
+      const video = await getVideoById(
+        req.params.id,
+        req.user.tenantId,
+        req.user.role,
+        req.user.userId
+      );
+
+      if (!video) {
+        return res
+          .status(404)
+          .json({ message: "Video not found or access denied" });
       }
 
       return res.json({
@@ -397,12 +300,21 @@ router.patch(
           _id: video._id,
           title: video.title,
           description: video.description,
+          originalFilename: video.originalFilename,
+          size: video.size,
+          duration: video.duration,
           status: video.status,
           safetyStatus: video.safetyStatus,
+          owner: video.ownerId,
+          assignedTo: video.assignedTo,
+          createdAt: video.createdAt,
+          updatedAt: video.updatedAt,
         },
       });
     } catch (error: any) {
-      return res.status(500).json({ message: error?.message || 'Failed to update video' });
+      return res
+        .status(500)
+        .json({ message: error?.message || "Failed to get video" });
     }
   }
 );
@@ -411,13 +323,13 @@ router.patch(
 // Editors can delete videos they own OR videos assigned to them
 // Admins can delete ANY video in their tenant
 router.delete(
-  '/:id',
+  "/:id",
   authMiddleware,
-  requireRole('editor', 'admin'),
+  requireRole("editor", "admin"),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!req.user) {
-        return res.status(401).json({ message: 'Unauthenticated' });
+        return res.status(401).json({ message: "Unauthenticated" });
       }
 
       const deleted = await deleteVideo(
@@ -428,76 +340,35 @@ router.delete(
       );
 
       if (!deleted) {
-        return res.status(404).json({ message: 'Video not found or access denied' });
+        return res
+          .status(404)
+          .json({ message: "Video not found or access denied" });
       }
 
-      return res.json({ message: 'Video deleted successfully' });
+      return res.json({ message: "Video deleted successfully" });
     } catch (error: any) {
-      return res.status(500).json({ message: error?.message || 'Failed to delete video' });
-    }
-  }
-);
-
-// POST /api/videos/:id/assign - Assign video to users (editor/admin only)
-router.post(
-  '/:id/assign',
-  authMiddleware,
-  requireRole('editor', 'admin'),
-  async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      if (!req.user) {
-        return res.status(401).json({ message: 'Unauthenticated' });
-      }
-
-      const { userIds } = req.body;
-
-      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-        return res.status(400).json({ message: 'userIds array is required' });
-      }
-
-      try {
-        const video = await assignVideoToUsers(
-          req.params.id,
-          req.user.tenantId,
-          userIds,
-          req.user.role,
-          req.user.userId
-        );
-
-        return res.json({
-          video: {
-            _id: video._id,
-            title: video.title,
-            assignedTo: video.assignedTo,
-          },
-        });
-      } catch (error: any) {
-        if (error?.message === 'Video not found or access denied') {
-          return res.status(404).json({ message: error.message });
-        }
-        throw error;
-      }
-    } catch (error: any) {
-      return res.status(400).json({ message: error?.message || 'Failed to assign video' });
+      return res
+        .status(500)
+        .json({ message: error?.message || "Failed to delete video" });
     }
   }
 );
 
 // POST /api/videos/:id/assign/add - Add users to video assignment (editor/admin only)
 router.post(
-  '/:id/assign/add',
+  "/:id/assign/add",
   authMiddleware,
-  requireRole('editor', 'admin'),
+  requireRole("editor", "admin"),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!req.user) {
-        return res.status(401).json({ message: 'Unauthenticated' });
+        return res.status(401).json({ message: "Unauthenticated" });
       }
 
       const { userIds } = req.body;
 
       if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-        return res.status(400).json({ message: 'userIds array is required' });
+        return res.status(400).json({ message: "userIds array is required" });
       }
 
       try {
@@ -517,32 +388,34 @@ router.post(
           },
         });
       } catch (error: any) {
-        if (error?.message === 'Video not found or access denied') {
+        if (error?.message === "Video not found or access denied") {
           return res.status(404).json({ message: error.message });
         }
         throw error;
       }
     } catch (error: any) {
-      return res.status(400).json({ message: error?.message || 'Failed to add users' });
+      return res
+        .status(400)
+        .json({ message: error?.message || "Failed to add users" });
     }
   }
 );
 
 // POST /api/videos/:id/assign/remove - Remove users from video assignment (editor/admin only)
 router.post(
-  '/:id/assign/remove',
+  "/:id/assign/remove",
   authMiddleware,
-  requireRole('editor', 'admin'),
+  requireRole("editor", "admin"),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       if (!req.user) {
-        return res.status(401).json({ message: 'Unauthenticated' });
+        return res.status(401).json({ message: "Unauthenticated" });
       }
 
       const { userIds } = req.body;
 
       if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-        return res.status(400).json({ message: 'userIds array is required' });
+        return res.status(400).json({ message: "userIds array is required" });
       }
 
       try {
@@ -562,16 +435,17 @@ router.post(
           },
         });
       } catch (error: any) {
-        if (error?.message === 'Video not found or access denied') {
+        if (error?.message === "Video not found or access denied") {
           return res.status(404).json({ message: error.message });
         }
         throw error;
       }
     } catch (error: any) {
-      return res.status(400).json({ message: error?.message || 'Failed to remove users' });
+      return res
+        .status(400)
+        .json({ message: error?.message || "Failed to remove users" });
     }
   }
 );
 
 export default router;
-
