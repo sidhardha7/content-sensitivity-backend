@@ -1,8 +1,20 @@
-const mongoose = require('mongoose');
+import mongoose, { Document, Model } from 'mongoose';
 
-const ROLES = ['viewer', 'editor', 'admin'];
+export const ROLES = ['viewer', 'editor', 'admin'] as const;
+export type Role = (typeof ROLES)[number];
 
-const userSchema = new mongoose.Schema(
+export interface IUser extends Document {
+  tenantId: mongoose.Types.ObjectId;
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: Role;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const userSchema = new mongoose.Schema<IUser>(
   {
     tenantId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -40,9 +52,7 @@ const userSchema = new mongoose.Schema(
 
 userSchema.index({ tenantId: 1, email: 1 }, { unique: true });
 
-module.exports = {
-  User: mongoose.model('User', userSchema),
-  ROLES,
-};
+export const User: Model<IUser> = mongoose.model<IUser>('User', userSchema);
 
+export default User;
 

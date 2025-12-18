@@ -1,6 +1,13 @@
-const mongoose = require('mongoose');
+import mongoose, { Document, Model } from 'mongoose';
 
-const tenantSchema = new mongoose.Schema(
+export interface ITenant extends Document {
+  name: string;
+  slug: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const tenantSchema = new mongoose.Schema<ITenant>(
   {
     name: {
       type: String,
@@ -14,14 +21,11 @@ const tenantSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
-    settings: {
-      type: Object,
-      default: {},
-    },
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model('Tenant', tenantSchema);
+export const Tenant: Model<ITenant> = mongoose.model<ITenant>('Tenant', tenantSchema);
 
+export default Tenant;
 
