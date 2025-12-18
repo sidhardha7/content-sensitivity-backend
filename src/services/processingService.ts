@@ -1,19 +1,9 @@
-import { Video, IVideo } from '../models/Video';
-import { updateVideoStatus } from './videoService';
-import { getFilePath } from './storageService';
-import ffmpeg from 'fluent-ffmpeg';
-import { Server as SocketIOServer } from 'socket.io';
-
-// Mock sensitivity analysis - returns safe or flagged based on simple rules
-const mockSensitivityAnalysis = async (videoPath: string): Promise<'safe' | 'flagged'> => {
-  // Simulate processing time
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-
-  // Mock logic: randomly flag ~20% of videos
-  // In real implementation, this would use ML models, content analysis, etc.
-  const random = Math.random();
-  return random < 0.2 ? 'flagged' : 'safe';
-};
+import { Video, IVideo } from "../models/Video";
+import { updateVideoStatus } from "./videoService";
+import { getFilePath } from "./storageService";
+import ffmpeg from "fluent-ffmpeg";
+import { Server as SocketIOServer } from "socket.io";
+import { analyzeVideoSensitivity } from "./sensitivityAnalysis";
 
 /**
  * Get video duration and basic metadata using FFmpeg
@@ -23,7 +13,7 @@ const getVideoMetadata = (videoPath: string): Promise<{ duration: number }> => {
     ffmpeg.ffprobe(videoPath, (err, metadata) => {
       if (err) {
         // If FFmpeg fails, return default values
-        console.warn('[processing] FFmpeg probe failed:', err.message);
+        console.warn("[processing] FFmpeg probe failed:", err.message);
         resolve({ duration: 0 });
         return;
       }
@@ -37,9 +27,9 @@ const getVideoMetadata = (videoPath: string): Promise<{ duration: number }> => {
 export interface ProcessingJob {
   videoId: string;
   tenantId: string;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
+  status: "queued" | "processing" | "completed" | "failed";
   progress: number;
-  safetyStatus?: 'safe' | 'flagged';
+  safetyStatus?: "safe" | "flagged";
 }
 
 // In-memory job queue (in production, use Redis or a proper queue system)
@@ -57,28 +47,34 @@ export const processVideo = async (
     // Get video from database
     const video = await Video.findOne({ _id: videoId, tenantId });
     if (!video) {
-      throw new Error('Video not found');
+      throw new Error("Video not found");
     }
 
     // Create job entry
     const job: ProcessingJob = {
       videoId,
       tenantId,
-      status: 'queued',
+      status: "queued",
       progress: 0,
     };
     processingQueue.set(videoId, job);
 
     // Update video status to processing
-    await updateVideoStatus(videoId, tenantId, { status: 'processing' }, undefined, undefined);
-    job.status = 'processing';
+    await updateVideoStatus(
+      videoId,
+      tenantId,
+      { status: "processing" },
+      undefined,
+      undefined
+    );
+    job.status = "processing";
     job.progress = 10;
 
     // Emit start event
     if (io) {
-      io.to(`tenant:${tenantId}`).emit('processing:start', {
+      io.to(`tenant:${tenantId}`).emit("processing:start", {
         videoId,
-        status: 'processing',
+        status: "processing",
         progress: 10,
       });
     }
@@ -89,11 +85,11 @@ export const processVideo = async (
     job.progress = 30;
 
     if (io) {
-      io.to(`tenant:${tenantId}`).emit('processing:progress', {
+      io.to(`tenant:${tenantId}`).emit("processing:progress", {
         videoId,
-        status: 'processing',
+        status: "processing",
         progress: 30,
-        message: 'Extracting video metadata...',
+        message: "Extracting video metadata...",
       });
     }
 
@@ -108,24 +104,24 @@ export const processVideo = async (
 
     // Step 2: Run sensitivity analysis (30% -> 80% progress)
     if (io) {
-      io.to(`tenant:${tenantId}`).emit('processing:progress', {
+      io.to(`tenant:${tenantId}`).emit("processing:progress", {
         videoId,
-        status: 'processing',
+        status: "processing",
         progress: 50,
-        message: 'Analyzing content sensitivity...',
+        message: "Analyzing content sensitivity...",
       });
     }
 
-    const safetyStatus = await mockSensitivityAnalysis(filePath);
+    const safetyStatus = await analyzeVideoSensitivity(filePath);
     job.progress = 80;
     job.safetyStatus = safetyStatus;
 
     if (io) {
-      io.to(`tenant:${tenantId}`).emit('processing:progress', {
+      io.to(`tenant:${tenantId}`).emit("processing:progress", {
         videoId,
-        status: 'processing',
+        status: "processing",
         progress: 80,
-        message: 'Finalizing results...',
+        message: "Finalizing results...",
       });
     }
 
@@ -134,21 +130,21 @@ export const processVideo = async (
       videoId,
       tenantId,
       {
-        status: 'processed',
+        status: "processed",
         safetyStatus,
       },
       undefined,
       undefined
     );
 
-    job.status = 'completed';
+    job.status = "completed";
     job.progress = 100;
 
     // Emit completion event
     if (io) {
-      io.to(`tenant:${tenantId}`).emit('processing:completed', {
+      io.to(`tenant:${tenantId}`).emit("processing:completed", {
         videoId,
-        status: 'processed',
+        status: "processed",
         progress: 100,
         safetyStatus,
         duration: metadata.duration,
@@ -158,23 +154,25 @@ export const processVideo = async (
     // Clean up job
     processingQueue.delete(videoId);
   } catch (error: any) {
-    console.error('[processing] Error processing video:', error);
+    console.error("[processing] Error processing video:", error);
 
     // Update video status to failed
     await updateVideoStatus(
       videoId,
       tenantId,
-      { status: 'failed' },
+      { status: "failed" },
       undefined,
       undefined
-    ).catch((err) => console.error('[processing] Failed to update video status:', err));
+    ).catch((err) =>
+      console.error("[processing] Failed to update video status:", err)
+    );
 
     // Emit error event
     if (io) {
-      io.to(`tenant:${tenantId}`).emit('processing:failed', {
+      io.to(`tenant:${tenantId}`).emit("processing:failed", {
         videoId,
-        status: 'failed',
-        error: error?.message || 'Processing failed',
+        status: "failed",
+        error: error?.message || "Processing failed",
       });
     }
 
@@ -189,4 +187,3 @@ export const processVideo = async (
 export const getProcessingStatus = (videoId: string): ProcessingJob | null => {
   return processingQueue.get(videoId) || null;
 };
-

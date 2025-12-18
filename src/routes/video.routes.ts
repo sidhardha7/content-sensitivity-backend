@@ -16,7 +16,10 @@ import {
   addUsersToVideo,
   removeUsersFromVideo,
 } from "../services/videoService";
-import { processVideo } from "../services/processingService";
+import {
+  processVideo,
+  getProcessingStatus,
+} from "../services/processingService";
 import {
   getFilePath,
   getFileStats,
@@ -154,6 +157,51 @@ router.get(
       return res
         .status(500)
         .json({ message: error?.message || "Failed to list videos" });
+    }
+  }
+);
+
+// GET /api/videos/:id/status - Get processing status (for polling fallback)
+// Must come before /:id route to avoid route conflicts
+router.get(
+  "/:id/status",
+  authMiddleware,
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: "Unauthenticated" });
+      }
+
+      const video = await getVideoById(
+        req.params.id,
+        req.user.tenantId,
+        req.user.role,
+        req.user.userId
+      );
+
+      if (!video) {
+        return res
+          .status(404)
+          .json({ message: "Video not found or access denied" });
+      }
+
+      const processingStatus = getProcessingStatus(req.params.id);
+
+      return res.json({
+        videoId: req.params.id,
+        status: video.status,
+        safetyStatus: video.safetyStatus,
+        processing: processingStatus
+          ? {
+              progress: processingStatus.progress,
+              status: processingStatus.status,
+            }
+          : null,
+      });
+    } catch (error: any) {
+      return res
+        .status(500)
+        .json({ message: error?.message || "Failed to get status" });
     }
   }
 );
