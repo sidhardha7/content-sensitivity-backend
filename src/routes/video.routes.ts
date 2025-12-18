@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
+import { Server as SocketIOServer } from 'socket.io';
 import { AuthenticatedRequest, authMiddleware, requireRole } from '../middleware/auth';
 import {
   createVideo,
@@ -12,6 +13,16 @@ import {
   addUsersToVideo,
   removeUsersFromVideo,
 } from '../services/videoService';
+import { processVideo, getProcessingStatus } from '../services/processingService';
+import { getFilePath, getFileStats, fileExists } from '../services/storageService';
+import fs from 'fs';
+
+// Store io instance (will be set from index.ts)
+let ioInstance: SocketIOServer | undefined;
+
+export const setSocketIO = (io: SocketIOServer) => {
+  ioInstance = io;
+};
 
 const router = Router();
 
@@ -59,6 +70,11 @@ router.post(
         file: req.file,
         ownerId: req.user.userId,
         tenantId: req.user.tenantId,
+      });
+
+      // Trigger processing asynchronously (don't wait for it)
+      processVideo(video._id.toString(), req.user.tenantId, ioInstance).catch((error) => {
+        console.error('[video] Failed to start processing:', error);
       });
 
       return res.status(201).json({
@@ -162,6 +178,119 @@ router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response)
     });
   } catch (error: any) {
     return res.status(500).json({ message: error?.message || 'Failed to list videos' });
+  }
+});
+
+// GET /api/videos/:id/status - Get processing status (for polling fallback)
+router.get('/:id/status', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ message: 'Unauthenticated' });
+    }
+
+    const video = await getVideoById(
+      req.params.id,
+      req.user.tenantId,
+      req.user.role,
+      req.user.userId
+    );
+
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found or access denied' });
+    }
+
+    const processingStatus = getProcessingStatus(req.params.id);
+
+    return res.json({
+      videoId: req.params.id,
+      status: video.status,
+      safetyStatus: video.safetyStatus,
+      processing: processingStatus
+        ? {
+            progress: processingStatus.progress,
+            status: processingStatus.status,
+          }
+        : null,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ message: error?.message || 'Failed to get status' });
+  }
+});
+
+// GET /api/videos/:id/stream - Stream video with HTTP range support
+router.get('/:id/stream', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ message: 'Unauthenticated' });
+    }
+
+    const video = await getVideoById(
+      req.params.id,
+      req.user.tenantId,
+      req.user.role,
+      req.user.userId
+    );
+
+    if (!video) {
+      return res.status(404).json({ message: 'Video not found or access denied' });
+    }
+
+    // Check if file exists
+    if (!fileExists(video.storagePath)) {
+      return res.status(404).json({ message: 'Video file not found' });
+    }
+
+    const filePath = getFilePath(video.storagePath);
+    const stats = await getFileStats(video.storagePath);
+    const fileSize = stats.size;
+
+    // Parse Range header
+    const range = req.headers.range;
+
+    if (range) {
+      // Parse range header (e.g., "bytes=0-1023")
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      // Validate range
+      if (start >= fileSize || end >= fileSize || start > end) {
+        res.status(416).set({
+          'Content-Range': `bytes */${fileSize}`,
+        });
+        return res.end();
+      }
+
+      // Set headers for partial content
+      res.status(206).set({
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': video.mimeType,
+        'Cache-Control': 'no-cache',
+      });
+
+      // Create read stream for the requested range
+      const stream = fs.createReadStream(filePath, { start, end });
+      stream.pipe(res);
+    } else {
+      // No range header - stream entire file
+      res.status(200).set({
+        'Content-Length': fileSize,
+        'Content-Type': video.mimeType,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-cache',
+      });
+
+      const stream = fs.createReadStream(filePath);
+      stream.pipe(res);
+    }
+  } catch (error: any) {
+    console.error('[stream] Error streaming video:', error);
+    if (!res.headersSent) {
+      return res.status(500).json({ message: error?.message || 'Failed to stream video' });
+    }
   }
 });
 

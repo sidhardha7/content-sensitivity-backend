@@ -1,18 +1,25 @@
 import express, { NextFunction, Request, Response } from 'express';
+import { createServer } from 'http';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { port, clientOrigin } from './src/config/env';
 import connectDB from './src/config/db';
 import './src/models';
+import { setupSocketIO } from './src/realtime/socket';
 import authRoutes from './src/routes/auth.routes';
 import adminRoutes from './src/routes/admin.routes';
-import videoRoutes from './src/routes/video.routes';
+import videoRoutes, { setSocketIO } from './src/routes/video.routes';
 
 const app = express();
+const httpServer = createServer(app);
 
 // Connect to MongoDB
 connectDB();
+
+// Setup Socket.io
+const io = setupSocketIO(httpServer);
+setSocketIO(io);
 
 // Core middlewares
 app.use(cors({ origin: clientOrigin, credentials: true }));
@@ -43,6 +50,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-app.listen(port, () => {
+httpServer.listen(port, () => {
   console.log(`Server is running on port ${port}`);
+  console.log(`Socket.io server initialized`);
 });
