@@ -1,6 +1,11 @@
 .env
+.env.local
+.env.production
+.env.development
 node_modules
 yarn.lock
-*.md
 uploads/
 dist/
+temp/
+*.log
+.DS_Store

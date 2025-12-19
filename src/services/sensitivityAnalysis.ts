@@ -160,13 +160,7 @@ export const analyzeVideoSensitivity = async (
 
     // Threshold: flag if max score > 0.7 or average > 0.5
     // These thresholds can be adjusted based on your requirements
-    
-    // TEST MODE: Force flagging for testing (set TEST_MODE=true in .env)
-    // In production, remove this and use real ML analysis
-    const testMode = process.env.TEST_MODE === "true";
-    const shouldFlag = testMode
-      ? Math.random() > 0.5 // 50% chance of flagging in test mode
-      : maxScore > 0.7 || avgScore > 0.5;
+    const shouldFlag = maxScore > 0.7 || avgScore > 0.5;
 
     // Clean up temporary frames
     for (const framePath of framePaths) {
