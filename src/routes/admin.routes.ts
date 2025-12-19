@@ -5,6 +5,8 @@ import {
   requireRole,
 } from "../middleware/auth";
 import { User } from "../models/User";
+import { Video } from "../models/Video";
+import { deleteFile } from "../services/storageService";
 
 const router = Router();
 
@@ -145,9 +147,42 @@ router.delete(
         .json({ message: "Cannot delete your own account" });
     }
 
-    await User.deleteOne({ _id: id, tenantId });
+    try {
+      // Find all videos owned by this user
+      const ownedVideos = await Video.find({ ownerId: id, tenantId });
+      
+      // Delete all video files owned by this user
+      for (const video of ownedVideos) {
+        try {
+          await deleteFile(video.storagePath);
+        } catch (error) {
+          // Log but don't fail if file doesn't exist
+          console.error(`Failed to delete file ${video.storagePath}:`, error);
+        }
+      }
 
-    return res.json({ message: "User deleted successfully" });
+      // Delete all videos owned by this user
+      await Video.deleteMany({ ownerId: id, tenantId });
+
+      // Remove user from all assignedTo arrays in videos
+      await Video.updateMany(
+        { tenantId, assignedTo: id },
+        { $pull: { assignedTo: id } }
+      );
+
+      // Delete the user
+      await User.deleteOne({ _id: id, tenantId });
+
+      return res.json({ 
+        message: "User deleted successfully",
+        deletedVideos: ownedVideos.length 
+      });
+    } catch (error: any) {
+      console.error("Error deleting user:", error);
+      return res
+        .status(500)
+        .json({ message: error?.message || "Failed to delete user" });
+    }
   }
 );
 

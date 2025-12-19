@@ -38,7 +38,6 @@ const videoSchema = new mongoose.Schema<IVideo>(
       type: [mongoose.Schema.Types.ObjectId],
       ref: 'User',
       default: [],
-      index: true,
     },
     title: {
       type: String,
