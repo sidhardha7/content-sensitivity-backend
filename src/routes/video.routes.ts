@@ -428,14 +428,36 @@ router.post(
 
       // Check if user has permission (editor can only analyze their own videos or assigned videos)
       const user = req.user; // TypeScript guard
-      if (
-        user.role === "editor" &&
-        video.ownerId.toString() !== user.userId &&
-        !video.assignedTo?.some((userId) => userId.toString() === user.userId)
-      ) {
-        return res.status(403).json({
-          message: "You don't have permission to analyze this video",
+      if (user.role === "editor") {
+        // Get ownerId as string (handle both populated and unpopulated cases)
+        let ownerIdStr: string;
+        if (
+          typeof video.ownerId === "object" &&
+          video.ownerId !== null &&
+          "_id" in video.ownerId
+        ) {
+          ownerIdStr = (video.ownerId as any)._id.toString();
+        } else {
+          ownerIdStr = String(video.ownerId);
+        }
+
+        // Get assignedTo as array of strings
+        const assignedToIds = (video.assignedTo || []).map((id: any) => {
+          if (typeof id === "object" && id !== null && "_id" in id) {
+            return id._id.toString();
+          }
+          return String(id);
         });
+
+        // Check if editor owns the video OR video is assigned to them
+        const isOwner = ownerIdStr === user.userId;
+        const isAssigned = assignedToIds.includes(user.userId);
+
+        if (!isOwner && !isAssigned) {
+          return res.status(403).json({
+            message: "You don't have permission to analyze this video",
+          });
+        }
       }
 
       // Set up Server-Sent Events (SSE) headers
