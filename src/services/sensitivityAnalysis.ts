@@ -2,6 +2,7 @@ import ffmpeg from "fluent-ffmpeg";
 import fs from "fs";
 import path from "path";
 import { promisify } from "util";
+import sharp from "sharp";
 
 const readdir = promisify(fs.readdir);
 const unlink = promisify(fs.unlink);
@@ -35,8 +36,9 @@ const extractFrames = async (
       const duration = metadata.format?.duration || 0;
       const numFrames = Math.max(
         1,
-        Math.min(10, Math.floor(duration / interval))
-      ); // Max 10 frames
+        Math.min(30, Math.floor(duration / interval))
+      );
+
       const timestamps: string[] = [];
 
       // Generate timestamps for frame extraction
@@ -45,12 +47,11 @@ const extractFrames = async (
         const hours = Math.floor(seconds / 3600);
         const mins = Math.floor((seconds % 3600) / 60);
         const secs = seconds % 60;
-        timestamps.push(
-          `${String(hours).padStart(2, "0")}:${String(mins).padStart(
-            2,
-            "0"
-          )}:${String(secs).padStart(2, "0")}`
-        );
+        const ts = `${String(hours).padStart(2, "0")}:${String(mins).padStart(
+          2,
+          "0"
+        )}:${String(secs).padStart(2, "0")}`;
+        timestamps.push(ts);
       }
 
       // If no timestamps, extract at least one frame at 1 second
@@ -94,29 +95,70 @@ const extractFrames = async (
  */
 const analyzeFrame = async (framePath: string): Promise<number> => {
   try {
-    // Get frame file stats
+    // Get frame file stats (size in bytes)
     const stats = await stat(framePath);
     const fileSize = stats.size;
 
-    // Basic heuristic analysis
-    // In production, this should use actual ML models like:
-    // - NSFW detection models
-    // - Content moderation APIs (Google Cloud Vision, AWS Rekognition)
-    // - Custom trained models
+    // Load image statistics using sharp
+    // This gives us per-channel mean and standard deviation
+    const image = sharp(framePath);
+    const imgStats = await image.stats();
 
-    // For now, implement a simple heuristic:
-    // - Very small files might be corrupted or black frames
-    // - Very large files might indicate high detail (could be analyzed further)
-    // - This is a placeholder that should be replaced with real ML analysis
+    const [r, g, b] = imgStats.channels;
 
-    // Placeholder: return a low random score for demonstration
-    // In real implementation, load image and run through ML model
-    const baseScore = fileSize < 1000 ? 0.1 : 0.05; // Small files get slightly higher score
-    const randomVariation = Math.random() * 0.2; // Add some variation
+    // Normalize means and stdevs to 0-1 range
+    const rMean = r.mean / 255;
+    const gMean = g.mean / 255;
+    const bMean = b.mean / 255;
 
-    return Math.min(1, baseScore + randomVariation);
+    const rStd = r.stdev / 255;
+    const gStd = g.stdev / 255;
+    const bStd = b.stdev / 255;
+
+    // Approximate brightness as average of RGB means
+    const brightness = (rMean + gMean + bMean) / 3;
+
+    // Approximate contrast as average standard deviation
+    const contrast = (rStd + gStd + bStd) / 3;
+
+    // Approximate color variance (how different channels are from each other)
+    const colorVariance =
+      ((rMean - gMean) ** 2 + (rMean - bMean) ** 2 + (gMean - bMean) ** 2) / 3;
+
+    // Heuristic scoring:
+    // - Mid-range brightness with high contrast and color variance is more likely to contain detailed content
+    // - Very dark or very bright frames are considered safer
+    let score = 0;
+
+    // Brightness contribution (peak risk around 0.5)
+    const brightnessRisk = 1 - Math.abs(brightness - 0.5) * 2; // 1 at 0.5, 0 at 0 or 1
+
+    // Contrast contribution (higher contrast → higher risk)
+    const contrastRisk = Math.min(1, contrast * 2);
+
+    // Color variance contribution (more varied colors → higher risk)
+    const colorRisk = Math.min(1, Math.sqrt(colorVariance) * 2);
+
+    // File size contribution: very tiny frames are likely not informative
+    const sizeRisk =
+      fileSize < 5_000
+        ? 0.1
+        : fileSize < 50_000
+        ? 0.3
+        : fileSize < 200_000
+        ? 0.6
+        : 0.8;
+
+    // Weighted combination
+    score =
+      brightnessRisk * 0.3 +
+      contrastRisk * 0.3 +
+      colorRisk * 0.2 +
+      sizeRisk * 0.2;
+
+    // Clamp to [0, 1]
+    return Math.max(0, Math.min(1, score));
   } catch (error) {
-    console.error(`[sensitivity] Error analyzing frame ${framePath}:`, error);
     return 0; // Safe by default if analysis fails
   }
 };
@@ -136,11 +178,10 @@ export const analyzeVideoSensitivity = async (
   );
 
   try {
-    // Step 1: Extract frames from video (sample every 5 seconds, max 10 frames)
+    // Step 1: Extract frames from video (sample every 5 seconds, max 30 frames)
     const framePaths = await extractFrames(videoPath, tempDir, 5);
 
     if (framePaths.length === 0) {
-      console.warn("[sensitivity] No frames extracted, defaulting to safe");
       return "safe";
     }
 
@@ -158,16 +199,16 @@ export const analyzeVideoSensitivity = async (
     const avgScore =
       analysisScores.reduce((a, b) => a + b, 0) / analysisScores.length;
 
-    // Threshold: flag if max score > 0.7 or average > 0.5
+    // Threshold: flag if max score > 0.4 or average > 0.4
     // These thresholds can be adjusted based on your requirements
-    const shouldFlag = maxScore > 0.7 || avgScore > 0.5;
+    const shouldFlag = maxScore > 0.4 || avgScore > 0.4;
 
     // Clean up temporary frames
     for (const framePath of framePaths) {
       try {
         await unlink(framePath);
       } catch (err) {
-        console.warn(`[sensitivity] Failed to delete frame:`, err);
+        // Silently ignore cleanup errors
       }
     }
 
@@ -175,13 +216,11 @@ export const analyzeVideoSensitivity = async (
     try {
       fs.rmdirSync(tempDir);
     } catch (err) {
-      console.warn(`[sensitivity] Failed to remove temp directory:`, err);
+      // Silently ignore cleanup errors
     }
 
     return shouldFlag ? "flagged" : "safe";
   } catch (error: any) {
-    console.error("[sensitivity] Error in video analysis:", error);
-
     // Clean up on error
     try {
       if (fs.existsSync(tempDir)) {
@@ -192,7 +231,7 @@ export const analyzeVideoSensitivity = async (
         fs.rmdirSync(tempDir);
       }
     } catch (cleanupError) {
-      console.warn("[sensitivity] Cleanup error:", cleanupError);
+      // Silently ignore cleanup errors
     }
 
     // Default to safe if analysis fails
