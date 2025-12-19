@@ -36,12 +36,23 @@ export interface ProcessingJob {
 const processingQueue: Map<string, ProcessingJob> = new Map();
 
 /**
+ * Progress callback type for streaming updates
+ */
+export type ProgressCallback = (data: {
+  progress: number;
+  message: string;
+  status?: string;
+  safetyStatus?: "safe" | "flagged";
+}) => void;
+
+/**
  * Process a video: extract metadata, run sensitivity analysis, update status
  */
 export const processVideo = async (
   videoId: string,
   tenantId: string,
-  io?: SocketIOServer
+  io?: SocketIOServer,
+  progressCallback?: ProgressCallback
 ): Promise<void> => {
   try {
     // Get video from database
@@ -79,6 +90,15 @@ export const processVideo = async (
       });
     }
 
+    // Send progress via callback if provided
+    if (progressCallback) {
+      progressCallback({
+        progress: 10,
+        message: "Starting analysis...",
+        status: "processing",
+      });
+    }
+
     // Step 1: Extract video metadata (30% progress)
     const filePath = getFilePath(video.storagePath);
     const metadata = await getVideoMetadata(filePath);
@@ -90,6 +110,14 @@ export const processVideo = async (
         status: "processing",
         progress: 30,
         message: "Extracting video metadata...",
+      });
+    }
+
+    if (progressCallback) {
+      progressCallback({
+        progress: 30,
+        message: "Extracting video metadata...",
+        status: "processing",
       });
     }
 
@@ -112,6 +140,14 @@ export const processVideo = async (
       });
     }
 
+    if (progressCallback) {
+      progressCallback({
+        progress: 50,
+        message: "Analyzing content sensitivity...",
+        status: "processing",
+      });
+    }
+
     const safetyStatus = await analyzeVideoSensitivity(filePath);
     job.progress = 80;
     job.safetyStatus = safetyStatus;
@@ -122,6 +158,15 @@ export const processVideo = async (
         status: "processing",
         progress: 80,
         message: "Finalizing results...",
+      });
+    }
+
+    if (progressCallback) {
+      progressCallback({
+        progress: 80,
+        message: "Finalizing results...",
+        status: "processing",
+        safetyStatus: safetyStatus, // Send safetyStatus as soon as it's available
       });
     }
 
@@ -151,6 +196,15 @@ export const processVideo = async (
       });
     }
 
+    if (progressCallback) {
+      progressCallback({
+        progress: 100,
+        message: "Analysis complete!",
+        status: "processed",
+        safetyStatus,
+      });
+    }
+
     // Clean up job
     processingQueue.delete(videoId);
   } catch (error: any) {
@@ -173,6 +227,14 @@ export const processVideo = async (
         videoId,
         status: "failed",
         error: error?.message || "Processing failed",
+      });
+    }
+
+    if (progressCallback) {
+      progressCallback({
+        progress: 0,
+        message: error?.message || "Processing failed",
+        status: "failed",
       });
     }
 

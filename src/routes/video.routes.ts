@@ -82,13 +82,6 @@ router.post(
         tenantId: req.user.tenantId,
       });
 
-      // Trigger processing asynchronously (don't wait for it)
-      processVideo(video._id.toString(), req.user.tenantId, ioInstance).catch(
-        (error) => {
-          console.error("[video] Failed to start processing:", error);
-        }
-      );
-
       return res.status(201).json({
         video: {
           _id: video._id,
@@ -398,6 +391,100 @@ router.delete(
       return res
         .status(500)
         .json({ message: error?.message || "Failed to delete video" });
+    }
+  }
+);
+
+// POST /api/videos/:id/analyze - Start sensitivity analysis with streaming progress (editor/admin only)
+router.post(
+  "/:id/analyze",
+  authMiddleware,
+  requireRole("editor", "admin"),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: "Unauthenticated" });
+      }
+
+      const video = await getVideoById(
+        req.params.id,
+        req.user.tenantId,
+        req.user.role,
+        req.user.userId
+      );
+
+      if (!video) {
+        return res
+          .status(404)
+          .json({ message: "Video not found or access denied" });
+      }
+
+      // Check if video is currently processing
+      if (video.status === "processing") {
+        return res.status(400).json({
+          message: "Video is already being processed",
+        });
+      }
+
+      // Check if user has permission (editor can only analyze their own videos or assigned videos)
+      const user = req.user; // TypeScript guard
+      if (
+        user.role === "editor" &&
+        video.ownerId.toString() !== user.userId &&
+        !video.assignedTo?.some((userId) => userId.toString() === user.userId)
+      ) {
+        return res.status(403).json({
+          message: "You don't have permission to analyze this video",
+        });
+      }
+
+      // Set up Server-Sent Events (SSE) headers
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Headers", "Cache-Control");
+
+      // Progress callback to send SSE events
+      const sendProgress = (data: {
+        progress: number;
+        message: string;
+        status?: string;
+        safetyStatus?: "safe" | "flagged";
+      }) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      // Start processing with streaming callback
+      processVideo(req.params.id, req.user.tenantId, ioInstance, sendProgress)
+        .then(() => {
+          // Send final completion event
+          res.write(
+            `data: ${JSON.stringify({
+              progress: 100,
+              message: "Analysis complete!",
+              status: "completed",
+            })}\n\n`
+          );
+          res.end();
+        })
+        .catch((error) => {
+          console.error("[video] Failed to process video:", error);
+          res.write(
+            `data: ${JSON.stringify({
+              progress: 0,
+              message: error?.message || "Processing failed",
+              status: "failed",
+            })}\n\n`
+          );
+          res.end();
+        });
+    } catch (error: any) {
+      if (!res.headersSent) {
+        return res
+          .status(500)
+          .json({ message: error?.message || "Failed to start analysis" });
+      }
     }
   }
 );
